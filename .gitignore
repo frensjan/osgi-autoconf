@@ -1,3 +1,5 @@
 /.metadata
+/cnf/*repo
+/cnf/cache
 *.class
 *.jar
