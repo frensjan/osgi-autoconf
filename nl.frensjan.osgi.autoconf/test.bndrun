@@ -1,8 +1,3 @@
-Private-Package: \
-	nl.frensjan.osgi.autoconf
-
-Service-Component: *
-
 -buildpath: \
 	osgi.core;version='[4.2,5)',\
 	osgi.cmpn,\
@@ -24,5 +19,3 @@ Service-Component: *
 	org.apache.felix.scr;version='[1.6.2,1.6.3)',\
 	org.apache.felix.webconsole;version='[3.1.8,3.1.9)',\
 	junit.osgi;version=3.8.2
-	
--sub: bnd.bnd, test.bnd

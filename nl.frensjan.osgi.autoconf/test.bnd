@@ -1,0 +1,7 @@
+Private-Package: \
+	nl.frensjan.osgi.autoconf,\
+	nl.frensjan.osgi.autoconf.test
+
+Service-Component: *
+
+Test-Cases: ${classes;CONCRETE;EXTENDS;junit.framework.TestCase}
