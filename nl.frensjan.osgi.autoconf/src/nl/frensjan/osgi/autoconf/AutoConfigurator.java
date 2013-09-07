@@ -36,7 +36,6 @@ public class AutoConfigurator implements ServiceListener {
 	private LogService logger;
 
 	private Config config;
-	private Map<String, Object> properties;
 
 	private final Map<ServiceReference, Configuration> managedConfigs = new ConcurrentHashMap<>();
 
@@ -66,7 +65,6 @@ public class AutoConfigurator implements ServiceListener {
 			}
 		}
 
-		this.properties = props;
 		this.config = configNew;
 
 		// for all known services matching the configured filter
