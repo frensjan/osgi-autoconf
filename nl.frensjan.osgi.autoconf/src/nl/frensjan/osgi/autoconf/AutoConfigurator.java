@@ -4,7 +4,6 @@ import java.io.IOException;
 import java.text.ParseException;
 import java.util.Arrays;
 import java.util.Dictionary;
-import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Properties;
@@ -170,23 +169,14 @@ public class AutoConfigurator implements ServiceListener {
 		}
 	}
 
-	@SuppressWarnings("rawtypes")
 	private void onModified(ServiceReference serviceReference) {
 		Configuration managedConfiguration = this.managedConfigs.get(serviceReference);
 
 		try {
+			@SuppressWarnings("rawtypes")
 			Dictionary newProps = this.createProperties(this.config.configuration(),
 					serviceReference);
-
-			try {
-				Dictionary oldProps = managedConfiguration.getProperties();
-
-				if (this.matches(oldProps, newProps) == false) {
-					managedConfiguration.update(newProps);
-				}
-			} catch (IllegalStateException e) {
-				managedConfiguration.update(newProps);
-			}
+			managedConfiguration.update(newProps);
 		} catch (ParseException e) {
 			this.logger.log(LogService.LOG_WARNING, "Couldn't parse the configuration", e);
 		} catch (IOException e) {
@@ -299,28 +289,6 @@ public class AutoConfigurator implements ServiceListener {
 		} else {
 			return new HashSet<>(0);
 		}
-	}
-
-	// TODO doesn't actually work with properties from OSGi now does it ...
-	@SuppressWarnings("rawtypes")
-	private boolean matches(Dictionary a, Dictionary b) {
-		if (a == null || b == null) {
-			return a == null && b == null;
-		}
-
-		if (a.size() != b.size()) {
-			return false;
-		}
-
-		for (Enumeration keys = a.keys(); keys.hasMoreElements();) {
-			Object key = keys.nextElement();
-			Object value = b.get(key);
-			if (value == null || a.get(key).equals(value) == false) {
-				return false;
-			}
-		}
-
-		return true;
 	}
 
 	@OCD(description = "Auto Configuration")
