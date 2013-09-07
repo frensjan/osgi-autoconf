@@ -45,10 +45,6 @@ public class AutoConfigurator implements ServiceListener {
 	@Modified
 	public void modified(BundleContext context, Map<String, Object> props)
 			throws InvalidSyntaxException {
-		if (this.matches(props, this.properties)) {
-			return;
-		}
-
 		// parse configuration
 		Config configNew = Configurable.createConfigurable(Config.class, props);
 
@@ -149,17 +145,16 @@ public class AutoConfigurator implements ServiceListener {
 
 		Configuration managedConfiguration;
 
-		String targetPid = this.config.targetPid();
-		String targetLocation = this.config.targetLocation();
-		if (targetLocation.length() == 0) {
-			targetLocation = null;
+		String pid = this.config.targetPid();
+		String location = this.config.targetLocation();
+		if (location.length() == 0) {
+			location = null;
 		}
 
 		if (this.config.factory()) {
-			managedConfiguration = this.configAdmin.createFactoryConfiguration(targetPid,
-					targetLocation);
+			managedConfiguration = this.configAdmin.createFactoryConfiguration(pid, location);
 		} else {
-			managedConfiguration = this.configAdmin.getConfiguration(targetPid, targetLocation);
+			managedConfiguration = this.configAdmin.getConfiguration(pid, location);
 		}
 
 		try {
@@ -319,26 +314,6 @@ public class AutoConfigurator implements ServiceListener {
 
 		for (Enumeration keys = a.keys(); keys.hasMoreElements();) {
 			Object key = keys.nextElement();
-			Object value = b.get(key);
-			if (value == null || a.get(key).equals(value) == false) {
-				return false;
-			}
-		}
-
-		return true;
-	}
-
-	// TODO doesn't actually work with properties from OSGi now does it ...
-	private boolean matches(Map<String, Object> a, Map<String, Object> b) {
-		if (a == null || b == null) {
-			return a == null && b == null;
-		}
-
-		if (a.size() != b.size()) {
-			return false;
-		}
-
-		for (Object key : a.keySet()) {
 			Object value = b.get(key);
 			if (value == null || a.get(key).equals(value) == false) {
 				return false;
