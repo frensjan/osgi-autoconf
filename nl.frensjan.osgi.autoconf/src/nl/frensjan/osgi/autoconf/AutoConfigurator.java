@@ -1,3 +1,21 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ * 
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
 package nl.frensjan.osgi.autoconf;
 
 import java.io.IOException;
@@ -55,7 +73,7 @@ public class AutoConfigurator implements ServiceListener {
 
 		if (this.config != null
 				&& this.config.multiplicity().equals(configNew.multiplicity()) == false) {
-			if (configNew.multiplicity() == Multiplicity.ONE_ON_ONE) {
+			if (configNew.multiplicity() == Multiplicity.ONE_TO_ONE) {
 				while (this.managedConfigs.size() > 1) {
 					ServiceReference ref = this.managedConfigs.keySet().iterator().next();
 					Configuration managedConfig = this.managedConfigs.remove(ref);
@@ -86,7 +104,7 @@ public class AutoConfigurator implements ServiceListener {
 		// longer available, remove the configuration
 		for (ServiceReference ref : this.managedConfigs.keySet()) {
 			// if the multiplicity is one, then don't delete the last config
-			if (this.config.multiplicity() == Multiplicity.ONE_ON_ONE
+			if (this.config.multiplicity() == Multiplicity.ONE_TO_ONE
 					&& this.managedConfigs.size() == 1 && refs.size() > 0) {
 				break;
 			}
@@ -135,7 +153,7 @@ public class AutoConfigurator implements ServiceListener {
 	}
 
 	private void onRegistered(ServiceReference serviceReference) throws IOException {
-		if (this.config.multiplicity() == Multiplicity.ONE_ON_ONE
+		if (this.config.multiplicity() == Multiplicity.ONE_TO_ONE
 				&& this.managedConfigs.size() >= 1) {
 			return;
 		}
@@ -144,7 +162,7 @@ public class AutoConfigurator implements ServiceListener {
 
 		String pid = this.config.targetPid();
 		String location = this.config.targetLocation();
-		if (location.length() == 0) {
+		if (location != null && location.length() == 0) {
 			location = null;
 		}
 
@@ -323,6 +341,6 @@ public class AutoConfigurator implements ServiceListener {
 	}
 
 	public static enum Multiplicity {
-		ONE_ON_ONE, MANY_TO_ONE
+		ONE_TO_ONE, MANY_TO_ONE
 	}
 }
