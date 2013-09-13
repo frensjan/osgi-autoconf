@@ -24,9 +24,11 @@ import aQute.bnd.annotation.component.Reference;
 
 @Component(designateFactory = ConsumerImpl.Config.class, provide = ConsumerImpl.class)
 public class ConsumerImpl {
-	@Reference
+	@Reference(dynamic = true, multiple = true, optional = true)
 	public void setProducer(Producer producer) {
-		System.out.printf("Producer %s produced %s\n", producer, producer.produce());
+	}
+
+	public void unsetProducer(Producer producer) {
 	}
 
 	public interface Config {
