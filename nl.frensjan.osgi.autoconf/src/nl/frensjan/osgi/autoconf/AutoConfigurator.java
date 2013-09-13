@@ -19,14 +19,15 @@
 package nl.frensjan.osgi.autoconf;
 
 import java.io.IOException;
+import java.io.PrintStream;
 import java.text.ParseException;
 import java.util.Arrays;
 import java.util.Dictionary;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -51,15 +52,15 @@ import aQute.bnd.annotation.metatype.Meta.OCD;
 @Component(immediate = true, designateFactory = AutoConfigurator.Config.class)
 public class AutoConfigurator implements ServiceListener {
 	private ConfigurationAdmin configAdmin;
-	private LogService logger;
+	private LogService logger = new PrintStreamLogger(System.out);
 
 	private Config config;
 
-	private final Map<ServiceReference, Configuration> managedConfigs = new ConcurrentHashMap<>();
+	private final Map<ServiceReference, Configuration> managedConfigs = new HashMap<>();
 
 	@Activate
 	@Modified
-	public void modified(BundleContext context, Map<String, Object> props)
+	public synchronized void modified(BundleContext context, Map<String, Object> props)
 			throws InvalidSyntaxException {
 		// parse configuration
 		Config configNew = Configurable.createConfigurable(Config.class, props);
@@ -71,14 +72,17 @@ public class AutoConfigurator implements ServiceListener {
 			context.addServiceListener(this, configNew.filter());
 		}
 
-		if (this.config != null
-				&& this.config.multiplicity().equals(configNew.multiplicity()) == false) {
-			if (configNew.multiplicity() == Multiplicity.ONE_TO_ONE) {
-				while (this.managedConfigs.size() > 1) {
-					ServiceReference ref = this.managedConfigs.keySet().iterator().next();
-					Configuration managedConfig = this.managedConfigs.remove(ref);
+		if (this.config != null) {
+			Multiplicity multiplicity = this.config.multiplicity();
 
-					this.delete(managedConfig);
+			if (multiplicity.equals(configNew.multiplicity()) == false) {
+				if (multiplicity == Multiplicity.ONE_LAZY || multiplicity == Multiplicity.ONE_EAGER) {
+					while (this.managedConfigs.size() > 1) {
+						ServiceReference ref = this.managedConfigs.keySet().iterator().next();
+						Configuration managedConfig = this.managedConfigs.remove(ref);
+
+						this.deleteManagedConfiguration(managedConfig);
+					}
 				}
 			}
 		}
@@ -91,9 +95,9 @@ public class AutoConfigurator implements ServiceListener {
 		for (ServiceReference ref : refs) {
 			try {
 				if (this.managedConfigs.containsKey(ref)) {
-					this.onModified(ref);
+					this.updateManagedConfiguration(ref);
 				} else {
-					this.onRegistered(ref);
+					this.createManagedConfiguration(ref);
 				}
 			} catch (IOException e) {
 				this.logger.log(LogService.LOG_WARNING, "Couldn't create configuration", e);
@@ -101,29 +105,39 @@ public class AutoConfigurator implements ServiceListener {
 		}
 
 		// if there is any configuration managed in response to a service no
-		// longer available, remove the configuration
+		// longer available, delete the configuration
 		for (ServiceReference ref : this.managedConfigs.keySet()) {
 			// if the multiplicity is one, then don't delete the last config
-			if (this.config.multiplicity() == Multiplicity.ONE_TO_ONE
+			if (this.config.multiplicity() == Multiplicity.ONE_EAGER
 					&& this.managedConfigs.size() == 1 && refs.size() > 0) {
 				break;
 			}
 
 			// delete the configuration if the reference causing it is gone
 			if (refs.contains(ref) == false) {
-				this.delete(this.managedConfigs.remove(ref));
+				this.deleteManagedConfiguration(this.managedConfigs.remove(ref));
+			}
+		}
+
+		// if the multiplicity is one and is eager, then make sure there
+		// is a configuration, no matter what
+		if (this.config.multiplicity() == Multiplicity.ONE_EAGER && this.managedConfigs.size() < 1) {
+			try {
+				this.createManagedConfiguration(null);
+			} catch (IOException e) {
+				this.logger.log(LogService.LOG_WARNING, "Couldn't create configuration", e);
 			}
 		}
 	}
 
 	@Deactivate
-	public void deactivate() {
+	public synchronized void deactivate() {
 		for (Configuration managedConfiguration : this.managedConfigs.values()) {
-			this.delete(managedConfiguration);
+			this.deleteManagedConfiguration(managedConfiguration);
 		}
 	}
 
-	@Reference
+	@Reference(optional = true)
 	public void setLogger(LogService logger) {
 		this.logger = logger;
 	}
@@ -134,17 +148,17 @@ public class AutoConfigurator implements ServiceListener {
 	}
 
 	@Override
-	public void serviceChanged(ServiceEvent event) {
+	public synchronized void serviceChanged(ServiceEvent event) {
 		try {
 			switch (event.getType()) {
 			case ServiceEvent.REGISTERED:
-				this.onRegistered(event.getServiceReference());
+				this.createManagedConfiguration(event.getServiceReference());
 				break;
 			case ServiceEvent.MODIFIED:
-				this.onModified(event.getServiceReference());
+				this.updateManagedConfiguration(event.getServiceReference());
 				break;
 			case ServiceEvent.UNREGISTERING:
-				this.onUnregistered(event.getServiceReference());
+				this.deleteManagedConfiguration(event.getServiceReference());
 				break;
 			}
 		} catch (IOException e) {
@@ -152,13 +166,13 @@ public class AutoConfigurator implements ServiceListener {
 		}
 	}
 
-	private void onRegistered(ServiceReference serviceReference) throws IOException {
-		if (this.config.multiplicity() == Multiplicity.ONE_TO_ONE
+	private void createManagedConfiguration(ServiceReference serviceReference) throws IOException {
+		if ((this.config.multiplicity() == Multiplicity.ONE_LAZY || this.config.multiplicity() == Multiplicity.ONE_EAGER)
 				&& this.managedConfigs.size() >= 1) {
 			return;
 		}
 
-		Configuration managedConfiguration;
+		Configuration managedConfiguration = null;
 
 		String pid = this.config.targetPid();
 		String location = this.config.targetLocation();
@@ -166,10 +180,15 @@ public class AutoConfigurator implements ServiceListener {
 			location = null;
 		}
 
-		if (this.config.factory()) {
-			managedConfiguration = this.configAdmin.createFactoryConfiguration(pid, location);
-		} else {
-			managedConfiguration = this.configAdmin.getConfiguration(pid, location);
+		try {
+			if (this.config.factory()) {
+				managedConfiguration = this.configAdmin.createFactoryConfiguration(pid, location);
+			} else {
+				managedConfiguration = this.configAdmin.getConfiguration(pid, location);
+			}
+		} catch (NullPointerException e) {
+			this.logger.log(LogService.LOG_ERROR, "Damn nullpointer in ConfigurationAdminImpl ...");
+			return;
 		}
 
 		try {
@@ -185,7 +204,7 @@ public class AutoConfigurator implements ServiceListener {
 		}
 	}
 
-	private void onModified(ServiceReference serviceReference) {
+	private void updateManagedConfiguration(ServiceReference serviceReference) {
 		Configuration managedConfiguration = this.managedConfigs.get(serviceReference);
 
 		try {
@@ -200,15 +219,15 @@ public class AutoConfigurator implements ServiceListener {
 		}
 	}
 
-	private void onUnregistered(ServiceReference serviceReference) {
+	private void deleteManagedConfiguration(ServiceReference serviceReference) {
 		Configuration managedConfiguration = this.managedConfigs.remove(serviceReference);
 
 		if (managedConfiguration != null) {
-			this.delete(managedConfiguration);
+			this.deleteManagedConfiguration(managedConfiguration);
 		}
 	}
 
-	private void delete(Configuration managedConfiguration) {
+	private void deleteManagedConfiguration(Configuration managedConfiguration) {
 		try {
 			managedConfiguration.delete();
 		} catch (IllegalStateException | IOException e) {
@@ -246,8 +265,9 @@ public class AutoConfigurator implements ServiceListener {
 			int openIdx = value.indexOf('{');
 			int closeIdx = value.indexOf('}');
 
-			// if the value does not contain a reference, use it 'as is'
-			if (openIdx == -1 || closeIdx == -1) {
+			// if the value does not contain a reference, or there is no service
+			// registration which can provide the values, use it 'as is'
+			if (openIdx == -1 || closeIdx == -1 || serviceReference == null) {
 				props.setProperty(key, value);
 			}
 
@@ -307,13 +327,68 @@ public class AutoConfigurator implements ServiceListener {
 		}
 	}
 
+	private final class PrintStreamLogger implements LogService {
+		private final PrintStream out;
+
+		public PrintStreamLogger(PrintStream out) {
+			this.out = out;
+		}
+
+		@Override
+		public void log(ServiceReference sr, int level, String message, Throwable exception) {
+			switch (level) {
+			case LOG_DEBUG:
+				this.out.print("DEBUG");
+				break;
+			case LOG_INFO:
+				this.out.print("INFO");
+				break;
+			case LOG_WARNING:
+				this.out.print("WARNING");
+				break;
+			case LOG_ERROR:
+				this.out.print("ERROR");
+				break;
+			}
+
+			this.out.print(" - ");
+			this.out.print(message);
+
+			if (sr != null) {
+				this.out.printf(" for service %s", sr);
+			}
+
+			if (exception != null) {
+				this.out.print(" with exception: ");
+				this.out.print(exception.getClass().getName());
+				this.out.print("\n");
+				exception.printStackTrace(this.out);
+			}
+		}
+
+		@Override
+		public void log(ServiceReference sr, int level, String message) {
+			this.log(sr, level, message, null);
+		}
+
+		@Override
+		public void log(int level, String message, Throwable exception) {
+			this.log(null, level, message, exception);
+		}
+
+		@Override
+		public void log(int level, String message) {
+			this.log(null, level, message, null);
+		}
+	}
+
 	@OCD(description = "Auto Configuration")
 	public interface Config {
 		@AD(description = "The LDAP filter used for matching services in the"
 				+ " OSGi registry, for which configurations are to be managed.")
 		String filter();
 
-		@AD(deflt = "MANY_TO_ONE", description = "The amount of configurations"
+		@AD(deflt = "ONE_FOR_EACH", description = "The amount of configurations"
 				+ " to create and manage in response to the amount of service"
 				+ " registrations matched")
 		Multiplicity multiplicity();
@@ -341,6 +416,6 @@ public class AutoConfigurator implements ServiceListener {
 	}
 
 	public static enum Multiplicity {
-		ONE_TO_ONE, MANY_TO_ONE
+		ONE_FOR_EACH, ONE_LAZY, ONE_EAGER
 	}
 }
