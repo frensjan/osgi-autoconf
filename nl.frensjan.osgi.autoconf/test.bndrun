@@ -12,7 +12,7 @@
 	nl.frensjan.osgi.autoconf.test;version=latest,\
 	biz.aQute.bnd.annotation;version='[1.52.3,1.52.4)',\
 	javax.servlet;version='[2.5.0,2.5.1)',\
-	org.apache.felix.configadmin;version='[1.4.0,1.4.1)',\
+	org.apache.felix.configadmin;version='[1.6.0,1.7.0)',\
 	org.apache.felix.http.jetty;version='[2.2.0,2.2.1)',\
 	org.apache.felix.log;version='[1.0.1,1.0.2)',\
 	org.apache.felix.metatype;version='[1.0.4,1.0.5)',\
