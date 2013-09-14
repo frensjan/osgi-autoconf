@@ -312,7 +312,7 @@ public class AutoConfigurator implements ServiceListener {
 				}
 
 				// append the tail
-				if (pos < value.length()) {
+				if (pos - 1 < value.length()) {
 					valueBuilder.append(value.substring(pos - 1));
 				}
 
