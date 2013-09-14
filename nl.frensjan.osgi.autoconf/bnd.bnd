@@ -9,20 +9,4 @@ Service-Component: *
 	biz.aQute.bnd.annotation,\
 	junit.osgi
 	
--runfw: org.apache.felix.framework;version='[4.0,5)'
--runee: JavaSE-1.7
--runvm: -ea
--runsystempackages: sun.reflect
--runbundles: \
-	nl.frensjan.osgi.autoconf.test;version=latest,\
-	biz.aQute.bnd.annotation;version='[1.52.3,1.52.4)',\
-	javax.servlet;version='[2.5.0,2.5.1)',\
-	org.apache.felix.configadmin;version='[1.6.0,1.7.0)',\
-	org.apache.felix.http.jetty;version='[2.2.0,2.2.1)',\
-	org.apache.felix.log;version='[1.0.1,1.0.2)',\
-	org.apache.felix.metatype;version='[1.0.4,1.0.5)',\
-	org.apache.felix.scr;version='[1.6.2,1.6.3)',\
-	org.apache.felix.webconsole;version='[3.1.8,3.1.9)',\
-	junit.osgi;version=3.8.2
-	
 -sub: bnd.bnd, test.bnd
