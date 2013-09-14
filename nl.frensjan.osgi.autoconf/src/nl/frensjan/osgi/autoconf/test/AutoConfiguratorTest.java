@@ -24,7 +24,7 @@ import java.util.Properties;
 
 import junit.framework.TestCase;
 import nl.frensjan.osgi.autoconf.AutoConfigurator;
-import nl.frensjan.osgi.autoconf.AutoConfigurator.Multiplicity;
+import nl.frensjan.osgi.autoconf.Multiplicity;
 
 import org.osgi.framework.BundleContext;
 import org.osgi.framework.FrameworkUtil;
@@ -62,33 +62,107 @@ public class AutoConfiguratorTest extends TestCase {
 		Thread.sleep(100);
 	}
 
-	public void testSimple() throws Exception {
+	public void testManyToManyCounts() throws Exception {
 		this.createAutoConfig(Multiplicity.ONE_FOR_EACH);
-		this.assertConsumersForProducers(1, 1);
-	}
-
-	public void testManyToMany() throws Exception {
-		this.createAutoConfig(Multiplicity.ONE_FOR_EACH);
+		this.assertConsumersForProducers(10, 10);
 		this.assertConsumersForProducers(10, 10);
 	}
 
-	public void testOneLazy() throws Exception {
-		this.createAutoConfig(Multiplicity.ONE_LAZY);
-		this.assertConsumersForProducers(10, 1);
-	}
-
-	public void testOneEager() throws Exception {
+	public void testSingletonCounts() throws Exception {
 		this.assertConsumerCount(0);
 
-		this.createAutoConfig(Multiplicity.ONE_EAGER);
+		this.createAutoConfig(Multiplicity.SINGLETON);
 		this.assertConsumerCount(1);
 
-		this.assertConsumersForProducers(100, 1);
+		this.assertConsumersForProducers(10, 1);
+		this.assertConsumerCount(1);
+		this.assertConsumersForProducers(10, 1);
 		this.assertConsumerCount(1);
 
 		this.autoconfig.delete();
 		this.autoconfig = null;
 		this.assertConsumerCount(0);
+	}
+
+	public void testSingletonConfigForeachArray() throws Exception {
+		MatchedValidator matchedValidator = new MatchedValidator() {
+			@Override
+			public void validate(int producers, Object matched) {
+				assertEquals(producers, ((Object[]) matched).length);
+			}
+		};
+
+		this.createAutoConfig(Multiplicity.SINGLETON,
+				new String[] { "matched={array:service.pid}" });
+		this.assertCorrectMatchedUpdates(matchedValidator);
+	}
+
+	public void testSingletonConfigForeachConcat() throws Exception {
+		MatchedValidator matchedValidator = new MatchedValidator() {
+			@Override
+			public void validate(int producers, Object matched) {
+				String string = (String) matched;
+				assertTrue(string.contains("outer-prefix"));
+				assertTrue(string.contains("outer-postfix"));
+
+				if (producers > 0) {
+					assertTrue(string.contains("inner-prefix"));
+					assertTrue(string.contains("inner-postfix"));
+				} else {
+					assertFalse(string.contains("inner-prefix"));
+					assertFalse(string.contains("inner-postfix"));
+				}
+			}
+		};
+
+		this.createAutoConfig(Multiplicity.SINGLETON, new String[] { "matched={"
+				+ "concat:service.pid:"
+				+ "outer-prefix [inner-prefix % inner-postfix] outer-postfix" + "}" });
+		this.assertCorrectMatchedUpdates(matchedValidator);
+	}
+
+	public void testSingletonConfigForeachCount() throws Exception {
+		MatchedValidator matchedValidator = new MatchedValidator() {
+			@Override
+			public void validate(int producers, Object matched) {
+				assertEquals(producers, (int) matched);
+			}
+		};
+
+		this.createAutoConfig(Multiplicity.SINGLETON, new String[] { "matched={count}" });
+		this.assertCorrectMatchedUpdates(matchedValidator);
+	}
+
+	private interface MatchedValidator {
+		public void validate(int producers, Object matched);
+	}
+
+	private void assertCorrectMatchedUpdates(MatchedValidator matchedValidator) throws IOException,
+			InvalidSyntaxException, InterruptedException {
+
+		Configuration[] producerConfigs = new Configuration[3];
+
+		try {
+			Thread.sleep(100);
+			Configuration[] consumerConfigs = this.configAdmin.listConfigurations("(service.factoryPid=nl.frensjan.osgi.autoconf.test.ConsumerImpl)");
+			assertNotNull(consumerConfigs);
+			assertEquals(1, consumerConfigs.length);
+
+			Configuration consumerConfig = consumerConfigs[0];
+			Object matched = consumerConfig.getProperties().get("matched");
+			matchedValidator.validate(0, matched);
+
+			for (int i = 0; i < producerConfigs.length; i++) {
+				producerConfigs[i] = this.createProducerConfig();
+				Thread.sleep(100);
+
+				matched = consumerConfig.getProperties().get("matched");
+				matchedValidator.validate(i + 1, matched);
+			}
+		} finally {
+			// remove the producer and assert the consumer is removed
+			this.deleteAll(producerConfigs);
+		}
 	}
 
 	private void assertConsumersForProducers(int producerCount, int consumerCount)
@@ -112,7 +186,9 @@ public class AutoConfiguratorTest extends TestCase {
 
 	private void deleteAll(Configuration[] configs) throws IOException {
 		for (Configuration config : configs) {
-			config.delete();
+			if (config != null) {
+				config.delete();
+			}
 		}
 	}
 
@@ -132,7 +208,8 @@ public class AutoConfiguratorTest extends TestCase {
 		return producerConfig;
 	}
 
-	private void createAutoConfig(Multiplicity multiplicity) throws IOException {
+	private void createAutoConfig(Multiplicity multiplicity, String... configuration)
+			throws IOException {
 		this.autoconfig = this.configAdmin.createFactoryConfiguration(AutoConfigurator.class.getName());
 		Properties properties = new Properties();
 		properties.put("filter",
@@ -141,9 +218,7 @@ public class AutoConfiguratorTest extends TestCase {
 		properties.put("targetPid", ConsumerImpl.class.getName());
 		properties.put("factory", Boolean.TRUE);
 		// properties.put("targetLocation", value);
-		properties.put("configuration", new String[] { "a=bla",
-				"b=created for {service.pid}",
-				"producer.target=(service.pid={service.pid})" });
+		properties.put("configuration", configuration);
 
 		this.autoconfig.update(properties);
 	}
@@ -159,9 +234,6 @@ public class AutoConfiguratorTest extends TestCase {
 			refs = this.getServiceReferences(CONSUMER_CLASS);
 			Thread.sleep(timeout);
 		}
-
-		System.out.printf("%s services for %s in %s\n", refs.length == expected ? "found"
-				: "didn't find", clazz, iteration * timeout);
 
 		return refs;
 	}

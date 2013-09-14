@@ -19,10 +19,8 @@
 package nl.frensjan.osgi.autoconf;
 
 import java.io.IOException;
-import java.io.PrintStream;
 import java.text.ParseException;
 import java.util.Arrays;
-import java.util.Dictionary;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -43,98 +41,72 @@ import org.osgi.service.log.LogService;
 import aQute.bnd.annotation.component.Activate;
 import aQute.bnd.annotation.component.Component;
 import aQute.bnd.annotation.component.Deactivate;
-import aQute.bnd.annotation.component.Modified;
 import aQute.bnd.annotation.component.Reference;
 import aQute.bnd.annotation.metatype.Configurable;
-import aQute.bnd.annotation.metatype.Meta.AD;
-import aQute.bnd.annotation.metatype.Meta.OCD;
 
-@Component(immediate = true, designateFactory = AutoConfigurator.Config.class)
+@Component(immediate = true, designateFactory = Config.class)
 public class AutoConfigurator implements ServiceListener {
-	private ConfigurationAdmin configAdmin;
+	// logger (defaults to a system.out directed custom logger)
 	private LogService logger = new PrintStreamLogger(System.out);
 
+	// the service for creating, updating and deleting the configurations
+	private ConfigurationAdmin configAdmin;
+
+	// the context for e.g. service lookup
+	private BundleContext context;
+
+	// configuration for auto configuration
 	private Config config;
 
+	// the managed configurations
+	private Configuration singletonConfig = null;
 	private final Map<ServiceReference, Configuration> managedConfigs = new HashMap<>();
 
 	@Activate
-	@Modified
-	public synchronized void modified(BundleContext context, Map<String, Object> props)
+	public synchronized void activate(BundleContext context, Map<String, Object> props)
 			throws InvalidSyntaxException {
+		this.context = context;
+
 		// parse configuration
-		Config configNew = Configurable.createConfigurable(Config.class, props);
+		this.config = Configurable.createConfigurable(Config.class, props);
 
-		if (this.config == null || this.config.filter().equals(configNew.filter()) == false) {
-			this.deactivate();
+		// listen for changes in matching services
+		context.addServiceListener(this, this.config.filter());
 
-			context.removeServiceListener(this);
-			context.addServiceListener(this, configNew.filter());
-		}
+		// lookup services matching to new filter
+		Set<ServiceReference> matchingServices = this.matchingServices();
 
-		if (this.config != null) {
-			Multiplicity multiplicity = this.config.multiplicity();
-
-			if (multiplicity.equals(configNew.multiplicity()) == false) {
-				if (multiplicity == Multiplicity.ONE_LAZY || multiplicity == Multiplicity.ONE_EAGER) {
-					while (this.managedConfigs.size() > 1) {
-						ServiceReference ref = this.managedConfigs.keySet().iterator().next();
-						Configuration managedConfig = this.managedConfigs.remove(ref);
-
-						this.deleteManagedConfiguration(managedConfig);
-					}
-				}
-			}
-		}
-
-		this.config = configNew;
-
-		// for all known services matching the configured filter
-		// create the configurations
-		Set<ServiceReference> refs = this.getServices(context, this.config.filter());
-		for (ServiceReference ref : refs) {
-			try {
-				if (this.managedConfigs.containsKey(ref)) {
-					this.updateManagedConfiguration(ref);
-				} else {
-					this.createManagedConfiguration(ref);
-				}
-			} catch (IOException e) {
-				this.logger.log(LogService.LOG_WARNING, "Couldn't create configuration", e);
-			}
-		}
-
-		// if there is any configuration managed in response to a service no
-		// longer available, delete the configuration
-		for (ServiceReference ref : this.managedConfigs.keySet()) {
-			// if the multiplicity is one, then don't delete the last config
-			if (this.config.multiplicity() == Multiplicity.ONE_EAGER
-					&& this.managedConfigs.size() == 1 && refs.size() > 0) {
+		try {
+			switch (this.config.multiplicity()) {
+			case SINGLETON: {
+				// create the singleton configuration
+				this.updateSingletonConfiguration(matchingServices);
 				break;
 			}
-
-			// delete the configuration if the reference causing it is gone
-			if (refs.contains(ref) == false) {
-				this.deleteManagedConfiguration(this.managedConfigs.remove(ref));
+			case ONE_FOR_EACH: {
+				// create configurations for all matched services
+				for (ServiceReference ref : matchingServices) {
+					this.createManagedConfiguration(ref);
+				}
+				break;
 			}
-		}
-
-		// if the multiplicity is one and is eager, then make sure there
-		// is a configuration, no matter what
-		if (this.config.multiplicity() == Multiplicity.ONE_EAGER && this.managedConfigs.size() < 1) {
-			try {
-				this.createManagedConfiguration(null);
-			} catch (IOException e) {
-				this.logger.log(LogService.LOG_WARNING, "Couldn't create configuration", e);
 			}
+		} catch (Exception e) {
+			this.logger.log(LogService.LOG_ERROR, "Couldn't create configuration", e);
 		}
 	}
 
 	@Deactivate
-	public synchronized void deactivate() {
+	public synchronized void deactivate(BundleContext context) {
+		context.removeServiceListener(this);
+
 		for (Configuration managedConfiguration : this.managedConfigs.values()) {
-			this.deleteManagedConfiguration(managedConfiguration);
+			this.deleteConfiguration(managedConfiguration);
 		}
+
+		this.managedConfigs.clear();
+
+		this.deleteSingletonConfiguration();
 	}
 
 	@Reference(optional = true)
@@ -149,29 +121,102 @@ public class AutoConfigurator implements ServiceListener {
 
 	@Override
 	public synchronized void serviceChanged(ServiceEvent event) {
-		try {
-			switch (event.getType()) {
-			case ServiceEvent.REGISTERED:
-				this.createManagedConfiguration(event.getServiceReference());
-				break;
-			case ServiceEvent.MODIFIED:
-				this.updateManagedConfiguration(event.getServiceReference());
-				break;
-			case ServiceEvent.UNREGISTERING:
-				this.deleteManagedConfiguration(event.getServiceReference());
-				break;
+		ServiceReference ref = event.getServiceReference();
+
+		switch (this.config.multiplicity()) {
+		case SINGLETON: {
+			try {
+				this.updateSingletonConfiguration(this.matchingServices());
+			} catch (Exception e) {
+				this.logger.log(LogService.LOG_ERROR, "Unable to process service changed event", e);
 			}
-		} catch (IOException e) {
-			this.logger.log(LogService.LOG_WARNING, "Unable to process service changed event", e);
+			break;
+		}
+		case ONE_FOR_EACH: {
+			try {
+				switch (event.getType()) {
+				case ServiceEvent.REGISTERED:
+					this.createManagedConfiguration(ref);
+					break;
+				case ServiceEvent.MODIFIED:
+					this.updateManagedConfiguration(ref);
+					break;
+				case ServiceEvent.UNREGISTERING:
+					this.deleteManagedConfiguration(ref);
+					break;
+				}
+			} catch (Exception e) {
+				this.logger.log(LogService.LOG_ERROR, "Unable to process service changed event", e);
+			}
+			break;
+		}
 		}
 	}
 
-	private void createManagedConfiguration(ServiceReference serviceReference) throws IOException {
-		if ((this.config.multiplicity() == Multiplicity.ONE_LAZY || this.config.multiplicity() == Multiplicity.ONE_EAGER)
-				&& this.managedConfigs.size() >= 1) {
-			return;
-		}
+	private void updateSingletonConfiguration(Set<ServiceReference> matchingServices)
+			throws IOException, ParseException {
+		try {
+			Properties props = this.createProperties(this.config.configuration(),
+					new AggregatePropertyProvider(this.matchingServices()));
 
+			if (this.singletonConfig == null) {
+				this.singletonConfig = this.createConfiguration(props);
+			} else {
+				this.singletonConfig.update(props);
+			}
+		} catch (InvalidSyntaxException e) {
+			this.logger.log(LogService.LOG_ERROR, "Invalid filter syntax", e);
+		}
+	}
+
+	private void deleteSingletonConfiguration() {
+		if (this.singletonConfig != null) {
+			this.deleteConfiguration(this.singletonConfig);
+		}
+	}
+
+	private Configuration createManagedConfiguration(ServiceReference ref) throws IOException,
+			ParseException {
+		try {
+			Properties props = this.createProperties(this.config.configuration(),
+					new BasicPropertyProvider(ref));
+
+			Configuration managedConfig = this.createConfiguration(props);
+			this.managedConfigs.put(ref, managedConfig);
+
+			return managedConfig;
+		} catch (ParseException e) {
+			this.logger.log(LogService.LOG_ERROR, "Couldn't parse the config spec", e);
+			throw e;
+		}
+	}
+
+	private void updateManagedConfiguration(ServiceReference ref) throws IOException,
+			ParseException {
+		Configuration managedConfiguration = this.managedConfigs.get(ref);
+
+		try {
+			Properties newProps = this.createProperties(this.config.configuration(),
+					new BasicPropertyProvider(ref));
+			managedConfiguration.update(newProps);
+		} catch (ParseException e) {
+			this.logger.log(LogService.LOG_ERROR, "Couldn't parse the configuration", e);
+			throw e;
+		} catch (Exception e) {
+			this.logger.log(LogService.LOG_ERROR, "Couldn't update the configuration", e);
+			throw e;
+		}
+	}
+
+	private void deleteManagedConfiguration(ServiceReference ref) {
+		Configuration managedConfiguration = this.managedConfigs.remove(ref);
+
+		if (managedConfiguration != null) {
+			this.deleteConfiguration(managedConfiguration);
+		}
+	}
+
+	private Configuration createConfiguration(Properties props) throws IOException {
 		Configuration managedConfiguration = null;
 
 		String pid = this.config.targetPid();
@@ -180,56 +225,21 @@ public class AutoConfigurator implements ServiceListener {
 			location = null;
 		}
 
-		try {
-			if (this.config.factory()) {
-				managedConfiguration = this.configAdmin.createFactoryConfiguration(pid, location);
-			} else {
-				managedConfiguration = this.configAdmin.getConfiguration(pid, location);
-			}
-		} catch (NullPointerException e) {
-			this.logger.log(LogService.LOG_ERROR, "Damn nullpointer in ConfigurationAdminImpl ...");
-			return;
+		if (this.config.factory()) {
+			managedConfiguration = this.configAdmin.createFactoryConfiguration(pid, location);
+		} else {
+			managedConfiguration = this.configAdmin.getConfiguration(pid, location);
 		}
 
-		try {
-			Properties props = this.createProperties(this.config.configuration(), serviceReference);
-			managedConfiguration.update(props);
-			this.managedConfigs.put(serviceReference, managedConfiguration);
+		managedConfiguration.update(props);
 
-			this.logger.log(LogService.LOG_DEBUG, String.format("Created configuration"));
-		} catch (ParseException e) {
-			this.logger.log(LogService.LOG_WARNING,
-					"Couldn't parse the configuration specification",
-					e);
-		}
+		this.logger.log(LogService.LOG_DEBUG, "Created configuration");
+		return managedConfiguration;
 	}
 
-	private void updateManagedConfiguration(ServiceReference serviceReference) {
-		Configuration managedConfiguration = this.managedConfigs.get(serviceReference);
-
+	private void deleteConfiguration(Configuration configuration) {
 		try {
-			@SuppressWarnings("rawtypes")
-			Dictionary newProps = this.createProperties(this.config.configuration(),
-					serviceReference);
-			managedConfiguration.update(newProps);
-		} catch (ParseException e) {
-			this.logger.log(LogService.LOG_WARNING, "Couldn't parse the configuration", e);
-		} catch (IOException e) {
-			this.logger.log(LogService.LOG_WARNING, "Couldn't update the configuration", e);
-		}
-	}
-
-	private void deleteManagedConfiguration(ServiceReference serviceReference) {
-		Configuration managedConfiguration = this.managedConfigs.remove(serviceReference);
-
-		if (managedConfiguration != null) {
-			this.deleteManagedConfiguration(managedConfiguration);
-		}
-	}
-
-	private void deleteManagedConfiguration(Configuration managedConfiguration) {
-		try {
-			managedConfiguration.delete();
+			configuration.delete();
 		} catch (IllegalStateException | IOException e) {
 			this.logger.log(LogService.LOG_INFO, "unable to delete managed configuration");
 		}
@@ -249,7 +259,7 @@ public class AutoConfigurator implements ServiceListener {
 	 * @throws ParseException
 	 *             Thrown if the property lines aren't correctly formatted.
 	 */
-	private Properties createProperties(String[] propertyLines, ServiceReference serviceReference)
+	private Properties createProperties(String[] propertyLines, PropertyProvider valueProvider)
 			throws ParseException {
 		Properties props = new Properties();
 		for (String prop : propertyLines) {
@@ -267,7 +277,7 @@ public class AutoConfigurator implements ServiceListener {
 
 			// if the value does not contain a reference, or there is no service
 			// registration which can provide the values, use it 'as is'
-			if (openIdx == -1 || closeIdx == -1 || serviceReference == null) {
+			if (openIdx == -1 || closeIdx == -1 || valueProvider == null) {
 				props.setProperty(key, value);
 			}
 
@@ -276,7 +286,7 @@ public class AutoConfigurator implements ServiceListener {
 			// object (instead of copying it as a string)
 			else if (openIdx == 0 && closeIdx == value.length() - 1) {
 				String ref = value.substring(1, value.length() - 1);
-				props.put(key, serviceReference.getProperty(ref));
+				props.put(key, valueProvider.getProperty(ref));
 			}
 
 			// otherwise the value contains multiple references, build a
@@ -297,7 +307,7 @@ public class AutoConfigurator implements ServiceListener {
 
 					// get the reference value and append it
 					String ref = matcher.group(1);
-					Object v = serviceReference.getProperty(ref);
+					Object v = valueProvider.getProperty(ref);
 					valueBuilder.append(v);
 				}
 
@@ -314,6 +324,10 @@ public class AutoConfigurator implements ServiceListener {
 		return props;
 	}
 
+	private Set<ServiceReference> matchingServices() throws InvalidSyntaxException {
+		return this.getServices(this.context, this.config.filter());
+	}
+
 	private Set<ServiceReference> getServices(BundleContext context, String filter)
 			throws InvalidSyntaxException {
 		ServiceReference[] refs = context.getAllServiceReferences(null, filter);
@@ -325,97 +339,5 @@ public class AutoConfigurator implements ServiceListener {
 		} else {
 			return new HashSet<>(0);
 		}
-	}
-
-	private final class PrintStreamLogger implements LogService {
-		private final PrintStream out;
-
-		public PrintStreamLogger(PrintStream out) {
-			this.out = out;
-		}
-
-		@Override
-		public void log(ServiceReference sr, int level, String message, Throwable exception) {
-			switch (level) {
-			case LOG_DEBUG:
-				this.out.print("DEBUG");
-				break;
-			case LOG_INFO:
-				this.out.print("INFO");
-				break;
-			case LOG_WARNING:
-				this.out.print("WARNING");
-				break;
-			case LOG_ERROR:
-				this.out.print("ERROR");
-				break;
-			}
-
-			this.out.print(" - ");
-			this.out.print(message);
-
-			if (sr != null) {
-				this.out.printf(" for service %s", sr);
-			}
-
-			if (exception != null) {
-				this.out.print(" with exception: ");
-				this.out.print(exception.getClass().getName());
-				this.out.print("\n");
-				exception.printStackTrace(this.out);
-			}
-		}
-
-		@Override
-		public void log(ServiceReference sr, int level, String message) {
-			this.log(sr, level, message, null);
-		}
-
-		@Override
-		public void log(int level, String message, Throwable exception) {
-			this.log(null, level, message, exception);
-		}
-
-		@Override
-		public void log(int level, String message) {
-			this.log(null, level, message, null);
-		}
-	}
-
-	@OCD(description = "Auto Configuration")
-	public interface Config {
-		@AD(description = "The LDAP filter used for matching services in the"
-				+ " OSGi registry, for which configurations are to be managed.")
-		String filter();
-
-		@AD(deflt = "ONE_FOR_EACH", description = "The amount of configurations"
-				+ " to create and manage in response to the amount of service"
-				+ " registrations matched")
-		Multiplicity multiplicity();
-
-		@AD(description = "The (factory) pid of the configuration to create.")
-		String targetPid();
-
-		@AD(deflt = "true", description = "Whether a factory configuration"
-				+ " should be created or not.")
-		boolean factory();
-
-		@AD(required = false, description = "The (bundle) location to tie the"
-				+ " managed configurations to (e.g. in case when multiple bundles"
-				+ " with different versions are present in the OSGi container).")
-		String targetLocation();
-
-		@AD(description = "The specification of the configuration to manage"
-				+ " in response to services matching the specified filter."
-				+ " Each line is an entry in the managed configuration,"
-				+ " formatted as key=value, the value can either be a plain string"
-				+ " or references to configuration properties from the triggering"
-				+ " service can be used by specifying {ref}, where ref is the name"
-				+ " of the referenced property.")
-		String[] configuration();
-	}
-
-	public static enum Multiplicity {
-		ONE_FOR_EACH, ONE_LAZY, ONE_EAGER
 	}
 }
